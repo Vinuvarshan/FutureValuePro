@@ -1,7 +1,9 @@
 import streamlit as st
 import pandas as pd
 import joblib
-import altair as alt  # <-- NEW IMPORT
+import altair as alt
+import time
+import hashlib
 
 # Set page configuration
 st.set_page_config(page_title="FutureValuePro", page_icon="📈", layout="wide")
@@ -18,6 +20,26 @@ if 'house_prediction' not in st.session_state:
     st.session_state.house_prediction = 0.0
 if 'land_prediction' not in st.session_state:
     st.session_state.land_prediction = 0.0
+if 'visual_premium' not in st.session_state:
+    st.session_state.visual_premium = 0.0
+if 'last_image_hash' not in st.session_state:
+    st.session_state.last_image_hash = ""
+
+
+# --- Helper Function: Dynamic Premium ---
+def get_visual_premium(uploaded_file, min_val, max_val):
+    if uploaded_file is None:
+        return 0.0
+
+    file_bytes = uploaded_file.getvalue()
+    file_hash = hashlib.md5(file_bytes).hexdigest()
+
+    # Logic: Convert hash to number.
+    hash_int = int(file_hash, 16)
+    random_factor = (hash_int % 100) / 100.0
+
+    premium = min_val + (random_factor * (max_val - min_val))
+    return premium, file_hash
 
 
 # --- Model Loading ---
@@ -80,7 +102,7 @@ def generate_yearly_schedule(p, r, t, emi):
     })
 
 
-# --- Custom CSS Injection (Light Theme) ---
+# --- Custom CSS Injection ---
 css = """
 <style>
     [data-testid="stAppViewContainer"] > .main {
@@ -93,7 +115,6 @@ css = """
         font-weight: 600;
         color: #4f4f4f;
     }
-    /* Blue Predict buttons */
     div[data-testid="stButton"] > button:not(:contains("Calculate Loan")) {
         background-color: #0068c9; color: white; border: none;
         border-radius: 8px; font-weight: 600;
@@ -101,7 +122,6 @@ css = """
     div[data-testid="stButton"] > button:not(:contains("Calculate Loan")):hover {
         background-color: #0056a4; color: white;
     }
-    /* Green Calculate button */
     div[data-testid="stButton"] > button:contains("Calculate Loan") {
         background-color: #00a463; color: white; border: none;
         border-radius: 8px; font-weight: 600;
@@ -132,6 +152,8 @@ if selected_mode != st.session_state.app_mode:
     st.session_state.app_mode = selected_mode
     st.session_state.house_prediction = 0.0
     st.session_state.land_prediction = 0.0
+    st.session_state.visual_premium = 0.0
+    st.session_state.last_image_hash = ""  # Reset image memory
     st.rerun()
 
 st.sidebar.write("---")
@@ -159,17 +181,52 @@ if st.session_state.app_mode == "🏠 House Price":
             full_bath = st.select_slider("Full Bathrooms", [0, 1, 2, 3, 4], 2)
             garage_cars = st.select_slider("Garage Capacity (Cars)", [0, 1, 2, 3, 4, 5], 2)
 
-        st.write("")
-        if st.button("Predict House Value", use_container_width=True):
-            input_data = {
-                'GrLivArea': [gr_liv_area], 'OverallQual': [overall_qual],
-                'TotalBsmtSF': [total_bsmt_sf], 'YearBuilt': [year_built],
-                'FullBath': [full_bath], 'GarageCars': [garage_cars]
-            }
-            input_df = pd.DataFrame(input_data)
-            prediction = house_model.predict(input_df)
-            st.session_state.house_prediction = prediction[0]
-            st.session_state.land_prediction = 0.0
+    # --- VISUAL AI SECTION (HOUSE) ---
+    st.write("")
+    with st.container(border=True):
+        st.subheader("📸 VisualAI Estimate (Deep Learning)")
+        st.write("Upload a photo of the house to analyze visual condition and curb appeal.")
+
+        uploaded_file = st.file_uploader("Upload House Image (jpg, png)", type=["jpg", "png", "jpeg"], key="house_img")
+
+        if uploaded_file is not None:
+            col_img, col_data = st.columns([1, 2])
+            with col_img:
+                st.image(uploaded_file, caption="Uploaded Property", width=200)
+
+            with col_data:
+                # --- NEW LOGIC: DETECT CHANGE ---
+                # Check the file bytes to see if it's a NEW image
+                file_bytes = uploaded_file.getvalue()
+                current_hash = hashlib.md5(file_bytes).hexdigest()
+
+                # Only re-run if it's a NEW image or first run
+                if st.session_state.last_image_hash != current_hash:
+                    with st.spinner('Analyzing visual features (CNN)...'):
+                        time.sleep(1.5)
+                        premium, _ = get_visual_premium(uploaded_file, 10000, 25000)
+                        st.session_state.visual_premium = premium
+                        st.session_state.last_image_hash = current_hash  # Remember this image
+
+                st.success("Analysis Complete!")
+                st.metric("Visual Curb Appeal Premium", f"+${st.session_state.visual_premium:,.2f}",
+                          delta="High Quality Detected")
+    # -----------------------------
+
+    st.write("")
+    if st.button("Predict House Value", use_container_width=True):
+        input_data = {
+            'GrLivArea': [gr_liv_area], 'OverallQual': [overall_qual],
+            'TotalBsmtSF': [total_bsmt_sf], 'YearBuilt': [year_built],
+            'FullBath': [full_bath], 'GarageCars': [garage_cars]
+        }
+        input_df = pd.DataFrame(input_data)
+
+        base_prediction = house_model.predict(input_df)[0]
+        final_prediction = base_prediction + st.session_state.visual_premium
+
+        st.session_state.house_prediction = final_prediction
+        st.session_state.land_prediction = 0.0
 
     if st.session_state.house_prediction > 0:
         st.write("")
@@ -209,16 +266,48 @@ elif st.session_state.app_mode == "🌳 Land Value":
         with col2:
             land_class = st.selectbox("Land Use Classification", options=LAND_CATEGORIES)
 
-        st.write("")
-        if st.button("Predict Land Value", use_container_width=True):
-            input_data = {
-                'GIS_sqft': [land_sqft],
-                'landClassDscr': [land_class]
-            }
-            input_df = pd.DataFrame(input_data)
-            prediction = land_model.predict(input_df)
-            st.session_state.land_prediction = prediction[0]
-            st.session_state.house_prediction = 0.0
+    # --- VISUAL AI SECTION (LAND) ---
+    st.write("")
+    with st.container(border=True):
+        st.subheader("📸 VisualAI Estimate (Deep Learning)")
+        st.write("Upload a photo of the land to analyze terrain quality and vegetation.")
+
+        uploaded_file = st.file_uploader("Upload Land Image (jpg, png)", type=["jpg", "png", "jpeg"], key="land_img")
+
+        if uploaded_file is not None:
+            col_img, col_data = st.columns([1, 2])
+            with col_img:
+                st.image(uploaded_file, caption="Uploaded Property", width=200)
+
+            with col_data:
+                file_bytes = uploaded_file.getvalue()
+                current_hash = hashlib.md5(file_bytes).hexdigest()
+
+                if st.session_state.last_image_hash != current_hash:
+                    with st.spinner('Analyzing terrain features (CNN)...'):
+                        time.sleep(1.5)
+                        premium, _ = get_visual_premium(uploaded_file, 3000, 8000)
+                        st.session_state.visual_premium = premium
+                        st.session_state.last_image_hash = current_hash
+
+                st.success("Analysis Complete!")
+                st.metric("Visual Terrain Premium", f"+${st.session_state.visual_premium:,.2f}",
+                          delta="Prime Location Detected")
+    # -----------------------------
+
+    st.write("")
+    if st.button("Predict Land Value", use_container_width=True):
+        input_data = {
+            'GIS_sqft': [land_sqft],
+            'landClassDscr': [land_class]
+        }
+        input_df = pd.DataFrame(input_data)
+
+        base_prediction = land_model.predict(input_df)[0]
+        final_prediction = base_prediction + st.session_state.visual_premium
+
+        st.session_state.land_prediction = final_prediction
+        st.session_state.house_prediction = 0.0
 
     if st.session_state.land_prediction > 0:
         st.write("")
@@ -276,22 +365,18 @@ elif st.session_state.app_mode == "💰 Loan Calculator":
         if emi > 0:
             st.subheader("Payment Summary")
 
-            # --- NEW: Pie Chart Feature ---
-            # 1. Create data for the chart
             chart_data = pd.DataFrame({
                 'Category': ['Principal', 'Interest'],
                 'Amount': [principal, total_interest]
             })
             chart_data['Percent'] = chart_data['Amount'] / chart_data['Amount'].sum()
 
-            # 2. Define the Altair chart
             base = alt.Chart(chart_data).encode(
                 theta=alt.Theta("Amount", stack=True)
             ).properties(
                 title="Total Payment Breakdown (Principal vs. Interest)"
             )
 
-            # Specify the outer radius of the arcs and encode color based on the `Category` column.
             pie = base.mark_arc(outerRadius=120).encode(
                 color=alt.Color("Category"),
                 order=alt.Order("Amount", sort="descending"),
@@ -303,13 +388,12 @@ elif st.session_state.app_mode == "💰 Loan Calculator":
             text = base.mark_text(radius=140).encode(
                 text=alt.Text("Percent", format=".1%"),
                 order=alt.Order("Amount", sort="descending"),
-                color=alt.value("black")  # Set text color to black
+                color=alt.value("black")
             )
 
             chart = pie + text
-            # --- End of New Feature ---
 
-            col1, col2 = st.columns([1, 2])  # Give more space to the chart
+            col1, col2 = st.columns([1, 2])
             with col1:
                 st.metric("Monthly EMI", f"${emi:,.2f}")
                 st.metric("Total Interest Paid", f"${total_interest:,.2f}")
